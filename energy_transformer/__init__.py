@@ -1,1 +1,1 @@
-from energy_transformers import EnergyTransformer, BaseModernHopfield, SoftmaxModernHopfield
+from .energy_transformers import EnergyTransformer, BaseModernHopfield, SoftmaxModernHopfield
