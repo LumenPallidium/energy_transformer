@@ -213,3 +213,28 @@ class EnergyTransformer(torch.nn.Module):
             features.append(x.detach().clone())
         return x, features, energies
     
+    def filtered_forward(self, x, indices, n_iters = None):
+        """Given a tensor of the form [context, masked target] and indices describing where on the image
+        they come from, add positional embedding and pass through the transformer."""
+        if n_iters is None:
+            n_iters = self.n_iters
+
+        pos_embedding = self.pos_embedding[:, indices, :]
+
+        x = x + pos_embedding
+
+        energies = []
+        features = []
+        for i in range(n_iters):
+            g = self.norm(x)
+            energy, step, = self.forward_step(g)
+            x = x - self.alpha * step
+
+            energies.append(energy)
+            features.append(x.detach().clone())
+        return x, features, energies
+    
+    def ema_update(self, new_model):
+        for ema_param, new_param in zip(self.parameters(), new_model.parameters()):
+            ema_param.data.copy_(ema_param.data * self.ema_decay + (1 - self.ema_decay) * new_param.data)
+    
