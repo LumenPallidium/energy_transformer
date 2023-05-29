@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name = "energy_transformer",
-    version = "0.1.1",
+    version = "0.1.2",
     author = "Keir Havel",
     author_email = "keirhavel@live.com",
     description = "Pytorch implementation of an energy transformer.",
