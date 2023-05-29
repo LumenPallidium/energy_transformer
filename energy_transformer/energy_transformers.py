@@ -128,10 +128,10 @@ class SoftmaxModernHopfield(BaseModernHopfield):
         
 class EnergyTransformer(torch.nn.Module):
     def __init__(self,
-                 in_dim,
+                 dim,
                  hidden_dim,
                  n_heads,
-                 context_length = 0,
+                 context = 0,
                  n_iters_default = 12,
                  alpha = 0.1,
                  beta = None,
@@ -145,14 +145,14 @@ class EnergyTransformer(torch.nn.Module):
 
         Parameters
         ----------
-        in_dim : int
+        dim : int
             Dimension of the input and output
         hidden_dim : int
             Dimension of the hidden layer in the modern Hopfield network. Note that the number of memories stored in the Hopfield
             network is bounded by this number.
         n_heads : int
             Number of heads in the multi-head attention layer
-        context_length : int
+        context : int
             Integer that determines the size of the positional embedding. If 0, then no positional embedding is used.
         n_iters_default : int
             Default number of times the model will be recurrently applied to the input.
@@ -169,22 +169,22 @@ class EnergyTransformer(torch.nn.Module):
         """
         super().__init__()
 
-        self.in_dim = in_dim
+        self.dim = dim
         self.hidden_dim = hidden_dim
         self.n_heads = n_heads
-        self.context_length = context_length
+        self.context = context
         self.n_iters = n_iters_default
         self.num_quantizers = self.n_iters # this is for convenience when using with vq-vae
 
         self.alpha = alpha
-        if use_positional_embedding and context_length:
-            self.pos_embedding = torch.nn.Parameter(torch.randn(context_length, in_dim))
+        if use_positional_embedding and context:
+            self.pos_embedding = torch.nn.Parameter(torch.randn(context, dim))
         else:
             self.pos_embedding = 0
 
-        self.mha = EnergyMHA(self.in_dim, self.n_heads, beta = beta)
-        self.hopfield = SoftmaxModernHopfield(self.in_dim, self.hidden_dim, beta = beta) if hopfield_type == "softmax" else BaseModernHopfield(self.in_dim, self.hidden_dim, beta = beta)
-        self.norm = norm(self.in_dim)
+        self.mha = EnergyMHA(self.dim, self.n_heads, beta = beta)
+        self.hopfield = SoftmaxModernHopfield(self.dim, self.hidden_dim, beta = beta) if hopfield_type == "softmax" else BaseModernHopfield(self.dim, self.hidden_dim, beta = beta)
+        self.norm = norm(self.dim)
 
     def energy(self, x):
         mha_energy = self.mha.energy(x)
