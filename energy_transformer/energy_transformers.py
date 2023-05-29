@@ -7,8 +7,9 @@ def value_and_grad(f, x):
     """Compute value and gradient of f at x, typically for energy functions. It uses jacobian
     because we are trying to get the gradient of the energy with respect to the
     input, and autograd.grad doesn't work as well with batched inputs."""
-    y = x.detach().clone().requires_grad_(False)
-    y = torch.func.vmap(f)(y)
+    with torch.no_grad():
+        y = x.detach().clone()
+        y = torch.func.vmap(f)(y)
 
     grads = torch.func.vmap(torch.func.jacrev(f))(x)
     return y, grads
