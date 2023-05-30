@@ -37,7 +37,7 @@ if __name__ == "__main__":
     os.makedirs("tmp/", exist_ok = True)
 
     # data root
-    data_root = "C:/Projects/" # you should only need to change this
+    data_root = "D:/Projects/" # you should only need to change this
 
     # data and patcher params
     h, w = 32, 32
@@ -92,7 +92,7 @@ if __name__ == "__main__":
                               hopfield_hidden_dim, 
                               n_heads,
                               hopfield_type = "softmax",
-                              context_length = n_patches,
+                              context = n_patches,
                               n_iters_default = n_iters, 
                               alpha = alpha,
                               return_energy = True).to(device)

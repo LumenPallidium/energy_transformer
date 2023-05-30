@@ -232,7 +232,7 @@ class EnergyTransformer(torch.nn.Module):
 
             if self.return_energy:
                 with torch.no_grad():
-                    energy = self.energy(x)
+                    energy = torch.vmap(self.energy)(x)
                     energies.append(energy)
                     features.append(x.detach().clone())
 
