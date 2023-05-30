@@ -3,15 +3,19 @@ import torch
 # See https://ml-jku.github.io/hopfield-layers/, https://openreview.net/pdf?id=4nrZXPFN1c4 for mathematical reference
 # Implementation based on jax here: https://github.com/bhoov/energy-transformer-jax
 
+def value_and_grad_vmap(f, x):
+    """Compute gradient of f at x, typically for energy functions. It uses jacobian
+    because we are trying to get the gradient of the energy with respect to the
+    input, and autograd.grad doesn't work as well with batched inputs."""
+    grads = torch.func.vmap(torch.func.jacrev(f))(x)
+    return grads
+
 def value_and_grad(f, x):
     """Compute value and gradient of f at x, typically for energy functions. It uses jacobian
     because we are trying to get the gradient of the energy with respect to the
     input, and autograd.grad doesn't work as well with batched inputs."""
-    y = x.detach().clone().requires_grad_(False)
-    y = torch.func.vmap(f)(y)
-
-    grads = torch.func.vmap(torch.func.jacrev(f))(x)
-    return y, grads
+    grads = torch.func.jacrev(f)(x)
+    return grads
 
 class EnergyMHA(torch.nn.Module):
     """Multi-headed attention, but energetic."""
@@ -137,7 +141,10 @@ class EnergyTransformer(torch.nn.Module):
                  beta = None,
                  hopfield_type = "relu",
                  use_positional_embedding = True,
-                 norm = torch.nn.LayerNorm):
+                 norm = torch.nn.LayerNorm,
+                 ema_decay = 0.996,
+                 batched_input = True,
+                 return_energy = False,):
         """Implements the energy-based transformer from https://openreview.net/pdf?id=4nrZXPFN1c4. Unlike a conventional transformer,
         this model does not have a feedforward output layer, instead it has a parallel modern Hopfield network that works with the
         transformer. This network is recurrent: it repeatedly acts on the input, which serves to descend the gradient of the 
@@ -166,6 +173,12 @@ class EnergyTransformer(torch.nn.Module):
             Whether to use a positional embedding.
         norm : torch.nn.Module
             A normalization layer applied to the input (at each recurrent step)
+        ema_decay : float
+            Decay rate when using EMA of this model.
+        batched_input : bool
+            Whether the input is batched. If True, then vmap is used.
+        return_energy : bool
+            Whether to return the energy of the input at each recurrent step.
         """
         super().__init__()
 
@@ -186,13 +199,21 @@ class EnergyTransformer(torch.nn.Module):
         self.hopfield = SoftmaxModernHopfield(self.dim, self.hidden_dim, beta = beta) if hopfield_type == "softmax" else BaseModernHopfield(self.dim, self.hidden_dim, beta = beta)
         self.norm = norm(self.dim)
 
+        if batched_input:
+            self.value_grad = value_and_grad_vmap
+        else:
+            self.value_grad = value_and_grad
+
+        self.ema_decay = ema_decay
+        self.return_energy = return_energy
+
     def energy(self, x):
         mha_energy = self.mha.energy(x)
         hopfield_energy = self.hopfield.energy(x)
         return mha_energy + hopfield_energy
     
     def forward_step(self, x):
-        return value_and_grad(self.energy, x)
+        return self.value_grad(self.energy, x)
     
     def forward(self, x, n_iters = None, 
                 **kwargs # for compatibility with other models
@@ -206,12 +227,20 @@ class EnergyTransformer(torch.nn.Module):
         features = []
         for i in range(n_iters):
             g = self.norm(x)
-            energy, step, = self.forward_step(g)
+            step = self.forward_step(g)
             x = x - self.alpha * step
 
-            energies.append(energy)
-            features.append(x.detach().clone())
-        return x, features, energies
+            if self.return_energy:
+                with torch.no_grad():
+                    energy = self.energy(x)
+                    energies.append(energy)
+                    features.append(x.detach().clone())
+
+        if self.return_energy:
+            return x, features, energies
+        else:
+            return x
+        
     
     def filtered_forward(self, x, indices, n_iters = None):
         """Given a tensor of the form [context, masked target] and indices describing where on the image
@@ -219,20 +248,16 @@ class EnergyTransformer(torch.nn.Module):
         if n_iters is None:
             n_iters = self.n_iters
 
-        pos_embedding = self.pos_embedding[:, indices, :]
+        pos_embedding = self.pos_embedding[indices, :]
 
         x = x + pos_embedding
 
-        energies = []
-        features = []
         for i in range(n_iters):
             g = self.norm(x)
-            energy, step, = self.forward_step(g)
+            step = self.forward_step(g)
             x = x - self.alpha * step
 
-            energies.append(energy)
-            features.append(x.detach().clone())
-        return x, features, energies
+        return x
     
     def ema_update(self, new_model):
         for ema_param, new_param in zip(self.parameters(), new_model.parameters()):

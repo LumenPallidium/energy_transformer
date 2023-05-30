@@ -94,7 +94,8 @@ if __name__ == "__main__":
                               hopfield_type = "softmax",
                               context_length = n_patches,
                               n_iters_default = n_iters, 
-                              alpha = alpha).to(device)
+                              alpha = alpha,
+                              return_energy = True).to(device)
 
     # including the embedders, disable them to see how they affect learning (hint: the ET still learns, but slower)
     optimizer = torch.optim.Adam(chain(
