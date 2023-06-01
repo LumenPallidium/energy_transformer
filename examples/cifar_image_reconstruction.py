@@ -10,7 +10,7 @@ from tqdm import tqdm
 # need this to download the dataset
 ssl._create_default_https_context = ssl._create_unverified_context
 
-from energy_transformer import EnergyTransformer
+#from energy_transformer import EnergyTransformer
 
 im2tensor = torchvision.transforms.ToTensor()
 
@@ -99,7 +99,7 @@ if __name__ == "__main__":
 
     # including the embedders, disable them to see how they affect learning (hint: the ET still learns, but slower)
     optimizer = torch.optim.Adam(chain(
-                                       model.parameters(),
+                                       #model.parameters(),
                                        patch_embedder.parameters(),
                                        patch_deembedder.parameters()
                                        ), 

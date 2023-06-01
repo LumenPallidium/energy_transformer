@@ -3,15 +3,8 @@ import torch
 # See https://ml-jku.github.io/hopfield-layers/, https://openreview.net/pdf?id=4nrZXPFN1c4 for mathematical reference
 # Implementation based on jax here: https://github.com/bhoov/energy-transformer-jax
 
-def value_and_grad_vmap(f, x):
+def grads(f, x):
     """Compute gradient of f at x, typically for energy functions. It uses jacobian
-    because we are trying to get the gradient of the energy with respect to the
-    input, and autograd.grad doesn't work as well with batched inputs."""
-    grads = torch.func.vmap(torch.func.jacrev(f))(x)
-    return grads
-
-def value_and_grad(f, x):
-    """Compute value and gradient of f at x, typically for energy functions. It uses jacobian
     because we are trying to get the gradient of the energy with respect to the
     input, and autograd.grad doesn't work as well with batched inputs."""
     grads = torch.func.jacrev(f)(x)
@@ -44,36 +37,20 @@ class EnergyMHA(torch.nn.Module):
 
     def energy(self, x):
         """Input is length, embed_dim"""
-        k = torch.einsum("ld,hzd->lhz", x, self.Wk) # length, n_heads, head_dim
-        q = torch.einsum("ld,hzd->lhz", x, self.Wq)
+        k = torch.einsum("...ld,hzd->...lhz", x, self.Wk) #batch, length, n_heads, head_dim
+        q = torch.einsum("...ld,hzd->...lhz", x, self.Wq)
 
         # attention, where each head has its own scaling factor
-        attention = torch.einsum("h,qhz,khz->hqk", self.beta, q, k) # n_heads, length, length
+        attention = torch.einsum("h,...qhz,...khz->...hqk", self.beta, q, k) #batch, n_heads, length, length
 
-        attention = torch.logsumexp(attention, dim = -1) # n_heads, length
-        attention = attention.sum(dim = -1) # n_heads
+        attention = torch.logsumexp(attention, dim = -1) #batch, n_heads, length
+        attention = attention.sum(dim = -1) #batch, n_heads
 
-        return ((-1 / self.beta) * attention).sum(dim = -1) # scalar
+        return ((-1 / self.beta) * attention).sum() # scalar
     
-    def manual_grad(self, x):
-        """For testing (matches the jax implementation)"""
-        k = torch.einsum("ld,hzd->lhz", x, self.Wk) # (batch, length, n_heads, head_dim)
-        q = torch.einsum("ld,hzd->lhz", x, self.Wq)
-
-        F1 = torch.einsum("hzd,lhz->lhd", self.Wq, k)
-        F2 = torch.einsum("hzd,lhz->lhd", self.Wk, q)
-
-        # attention, where each head has its own scaling factor
-        attention = torch.einsum("h,qhz,khz->hqk", self.beta, q, k) # (batch, n_heads, length, length)
-        attention = torch.nn.functional.softmax(attention, dim = -1) # (batch, n_heads, length)
-        
-        t1 = -torch.einsum("lhd,hqk->ld", F1, attention)
-        t2 = -torch.einsum("lhd,hqk->ld", F2, attention)
-
-        return t1 + t2
  
     def forward(self, x):
-        return value_and_grad(self.energy, x)
+        return grads(self.energy, x)
     
 class BaseModernHopfield(torch.nn.Module):
     def __init__(self,
@@ -102,11 +79,11 @@ class BaseModernHopfield(torch.nn.Module):
         return -0.5*(energy**2).sum()
     
     def energy(self, x):
-        h = self.beta * torch.einsum("ld,dh->lh", x, self.W)
+        h = self.beta * torch.einsum("...ld,dh->...lh", x, self.W)
         return self.activation_energy(h)
     
     def forward(self, x):
-        return value_and_grad(self.energy, x)
+        return grads(self.energy, x)
 
 class SoftmaxModernHopfield(BaseModernHopfield):
     def __init__(self,
@@ -143,7 +120,6 @@ class EnergyTransformer(torch.nn.Module):
                  use_positional_embedding = True,
                  norm = torch.nn.LayerNorm,
                  ema_decay = 0.996,
-                 batched_input = True,
                  return_energy = False,):
         """Implements the energy-based transformer from https://openreview.net/pdf?id=4nrZXPFN1c4. Unlike a conventional transformer,
         this model does not have a feedforward output layer, instead it has a parallel modern Hopfield network that works with the
@@ -175,8 +151,6 @@ class EnergyTransformer(torch.nn.Module):
             A normalization layer applied to the input (at each recurrent step)
         ema_decay : float
             Decay rate when using EMA of this model.
-        batched_input : bool
-            Whether the input is batched. If True, then vmap is used.
         return_energy : bool
             Whether to return the energy of the input at each recurrent step.
         """
@@ -191,18 +165,13 @@ class EnergyTransformer(torch.nn.Module):
 
         self.alpha = alpha
         if use_positional_embedding and context:
-            self.pos_embedding = torch.nn.Parameter(torch.randn(context, dim))
+            self.pos_embedding = torch.nn.Parameter(torch.randn(1, context, dim))
         else:
             self.pos_embedding = 0
 
         self.mha = EnergyMHA(self.dim, self.n_heads, beta = beta)
         self.hopfield = SoftmaxModernHopfield(self.dim, self.hidden_dim, beta = beta) if hopfield_type == "softmax" else BaseModernHopfield(self.dim, self.hidden_dim, beta = beta)
         self.norm = norm(self.dim)
-
-        if batched_input:
-            self.value_grad = value_and_grad_vmap
-        else:
-            self.value_grad = value_and_grad
 
         self.ema_decay = ema_decay
         self.return_energy = return_energy
@@ -213,7 +182,7 @@ class EnergyTransformer(torch.nn.Module):
         return mha_energy + hopfield_energy
     
     def forward_step(self, x):
-        return self.value_grad(self.energy, x)
+        return grads(self.energy, x)
     
     def forward(self, x, n_iters = None, 
                 **kwargs # for compatibility with other models
@@ -232,7 +201,7 @@ class EnergyTransformer(torch.nn.Module):
 
             if self.return_energy:
                 with torch.no_grad():
-                    energy = torch.vmap(self.energy)(x)
+                    energy = self.energy(x)
                     energies.append(energy)
                     features.append(x.detach().clone())
 
@@ -243,12 +212,12 @@ class EnergyTransformer(torch.nn.Module):
         
     
     def filtered_forward(self, x, indices, n_iters = None):
-        """Given a tensor of the form [context, masked target] and indices describing where on the image
+        """Given a tensor of the form [masked target, context] and indices describing where on the image
         they come from, add positional embedding and pass through the transformer."""
         if n_iters is None:
             n_iters = self.n_iters
 
-        pos_embedding = self.pos_embedding[indices, :]
+        pos_embedding = self.pos_embedding[:, indices, :]
 
         x = x + pos_embedding
 
