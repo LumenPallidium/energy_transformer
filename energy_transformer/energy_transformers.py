@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 
 # See https://ml-jku.github.io/hopfield-layers/, https://openreview.net/pdf?id=4nrZXPFN1c4 for mathematical reference
 # Implementation based on jax here: https://github.com/bhoov/energy-transformer-jax
@@ -231,4 +232,44 @@ class EnergyTransformer(torch.nn.Module):
     def ema_update(self, new_model):
         for ema_param, new_param in zip(self.parameters(), new_model.parameters()):
             ema_param.data.copy_(ema_param.data * self.ema_decay + (1 - self.ema_decay) * new_param.data)
-    
+
+class MHA(torch.nn.Module):
+    def __init__(self,
+                 embed_dim,
+                 n_heads = 8,
+                 norm = True):
+        super().__init__()
+
+        self.embed_dim = embed_dim
+        self.n_heads = n_heads
+
+        self.head_dim = embed_dim // n_heads
+        assert self.head_dim * n_heads == self.embed_dim, "embed_dim must be divisible by num_heads"
+
+        if norm:
+            self.norm = torch.nn.LayerNorm(embed_dim)
+        else:
+            self.norm = torch.nn.Identity()
+        self.Wq = torch.nn.Parameter(torch.randn((self.n_heads, self.head_dim, self.embed_dim)))
+        self.Wk = torch.nn.Parameter(torch.randn((self.n_heads, self.head_dim, self.embed_dim)))
+
+        self.Wv = torch.nn.Parameter(torch.randn((self.n_heads, self.head_dim, self.embed_dim)))
+        self.Wo = torch.nn.Parameter(torch.randn((self.embed_dim, self.embed_dim)))
+
+    def forward(self, x):
+        x = self.norm(x)
+
+        q = torch.einsum("...ld,hzd->...lhz", x, self.Wq)
+        k = torch.einsum("...ld,hzd->...lhz", x, self.Wk)
+        v = torch.einsum("...ld,hzd->...lhz", x, self.Wv)
+
+        attention = torch.einsum("...ihz,...jhz-> ...hij", q, k) / np.sqrt(self.head_dim)
+        attention = torch.softmax(attention, dim = -1)
+
+        out = torch.einsum("...hij,...jhz->...ihz", attention, v)
+
+        out = torch.einsum("...ihz,zd->...i(hd)", out, self.Wo)
+        return out
+#TODO: add transformer with memory tokens
+#TODO: memory tokens should be distinct per head
+#TODO: how do i update the memory tokens? RNN? Hopfield? 
